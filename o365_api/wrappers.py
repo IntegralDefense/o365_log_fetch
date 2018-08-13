@@ -19,6 +19,8 @@ class FakeFileWrapper:
 
     def write(self, text):
         self.memory_file.write(text)
+        # Sets buffer position back to zero... so it can be read
+        self.memory_file.seek(0)
 
     def open(self, fake_switch=None):
         return self.memory_file
@@ -26,21 +28,18 @@ class FakeFileWrapper:
 
 class ParserWrapper:
 
-    def __init__(self, config_path):
-        self.config_path = config_path
+    def __init__(self, config_info, test=False):
+        self.config_info = config_info
         self.config_parser = ConfigParser()
-        self.parse_config()
+        self.parse_config(test=test)
 
-    def parse_config(self):
+    def parse_config(self, test=None):
 
-        try:
-            if not self.config_parser.read(self.config_path):
-                raise ParsingError("Config file is 'empty or undefined'")
-
-        except ConfigError as e:
-            raise ParsingError(
-                'Unable to parse config file for '
-                'O365ManagementApi: {}'.format(e))
+        if test:
+            self.config_parser.read_string(
+                self.config_info, source="Unit_Test_String")
+        else:
+            self.config_parser.read(self.config_info)
 
     def get_option(self, section, option):
 
@@ -49,7 +48,7 @@ class ParserWrapper:
 
         except (ConfigError, KeyError) as e:
             raise ConfigError("Error returning section '{}' option '{}' "
-                              "from O365ManagementAPI config file: {}"
+                              "from O365ManagementAPI config file."
                               "".format(section, option, e))
 
     def get_all_option_values_in_section(self, section):
@@ -58,9 +57,9 @@ class ParserWrapper:
             return [values for values in self.config_parser[section].values()]
 
         except (NoSectionError, KeyError):
-            raise KeyError("Section header '{}' is missing from config file "
-                           "'{}'".format(section, self.config_path))
+            raise KeyError("Section header '{}' is missing from config file."
+                           "".format(section, self.config_info))
         except DuplicateSectionError:
             raise DuplicateSectionError("Section header '{}' is duplicated in "
-                                        "config file '{}'"
-                                        "".format(section, self.config_path))
+                                        "config file."
+                                        "".format(section, self.config_info))
