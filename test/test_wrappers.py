@@ -1,7 +1,7 @@
 
 from configparser import (DuplicateSectionError, MissingSectionHeaderError,
                           DuplicateOptionError, Error as ConfigError)
-from unittest.mock import MagicMoc
+from unittest.mock import MagicMock
 from io import StringIO
 import unittest
 
