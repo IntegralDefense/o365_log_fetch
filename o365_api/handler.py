@@ -420,7 +420,7 @@ class O365ManagementApi:
                         "Excpetion when writing {}"
                         "".format(json.dumps(event))
                     )
-                        
+
 
 
     
