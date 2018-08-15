@@ -47,19 +47,15 @@ class ParserWrapper:
             return self.config_parser.get(section, option)
 
         except (ConfigError, KeyError) as e:
-            raise ConfigError("Error returning section '{}' option '{}' "
-                              "from O365ManagementAPI config file."
-                              "".format(section, option, e))
+            raise ConfigError("Error while getting option from config file: {}."
+                              "".format(e))
 
     def get_all_option_values_in_section(self, section):
 
         try:
             return [values for values in self.config_parser[section].values()]
 
-        except (NoSectionError, KeyError):
-            raise KeyError("Section header '{}' is missing from config file."
-                           "".format(section, self.config_info))
-        except DuplicateSectionError:
-            raise DuplicateSectionError("Section header '{}' is duplicated in "
-                                        "config file."
-                                        "".format(section, self.config_info))
+        except (ConfigError, KeyError) as e:
+            raise ConfigError("Error while getting all option values from "
+                              "config file: {}"
+                              "".format(e))
