@@ -254,35 +254,52 @@ class O365ManagementApi:
                 'API_SETTINGS', 'tenantId')
         }
         subscription_enabled = False
-        count = 0
+        retry_count = 0
+        retry_limit = 3
         while not subscription_enabled:
             r = requests.get(uri, params=parameters, headers=headers)
-            try:
-                enabled_content_types = [
-                    subscription['contentType'] for subscription in r.json()
-                    if subscription['status'] == 'enabled']
-            except TypeError:
-                raise TypeError(
-                    'Unexpected Message when checking subscription: {}'.format(
-                        r.text)
-                )
-            if content_type not in enabled_content_types:
-                print('No subscription for {}'.format(content_type))
-                try:
-                    self.start_subscription(content_type)
-                except (ValueError, KeyError):
-                    print("Error starting subscription")
-                    return False
-                count += 1
-                if count == 3:
-                    return False
+            enabled_content_types = self.get_enabled_content_types(r)
+            subscription_enabled = self.start_subscription_if_needed(
+                content_type, enabled_content_types)
+
+            if subscription_enabled:
+                break
             else:
-                # print('Found subscription {}'.format(content_type))
+                retry_count += 1
+
+            if retry_count == retry_limit:
+                raise ValueError("Attempts to start subscription for '{}' "
+                                 "have failed.".format(content_type))
+            else:
+                # Give it a rest to make sure you haven't hit rate limit
+                time.sleep(5)
+        return True
+
+    def start_subscription_if_needed(self, content_type, enabled_content_types):
+        if content_type not in enabled_content_types:
+            self._log_writer(logging.WARN, "No subscription for {}."
+                                           "".format(content_type))
+            if self.start_subscription(content_type):
                 return True
+            else:
+                return False
+        else:
+            return True
+
+    @staticmethod
+    def get_enabled_content_types(response):
+        try:
+            return [subscription['contentType']
+                    for subscription in response.json()
+                    if subscription['status'] == 'enabled']
+        except TypeError:
+            raise TypeError(
+                'Unexpected Message when checking subscription: {}'.format(
+                    response.text)
+            )
 
     @validate_token
     def start_subscription(self, content_type):
-        print('starting subscription for {}'.format(content_type))
         """
         Note that PublisherIdentifier is the GUID of the app writer,
         not the app user.
@@ -310,12 +327,14 @@ class O365ManagementApi:
         r = requests.post(uri, data=body, params=parameters, headers=headers)
         try:
             if r.json()['status'] != 'enabled':
-                raise ValueError('Subscription did not enable properly. {}'
-                                 ''.format(json.dumps(r.json())))
+                raise ValueError("Subscription for {} did not enable properly. "
+                                 "{}".format(content_type,
+                                             json.dumps(r.json()))
+                                 )
             else:
-                pass
+                return True
         except KeyError:
-            raise KeyError('Status not available in \'start subscription\' '
+            raise KeyError('Status not available in \'start_subscription\' '
                            'response: {}'.format(json.dumps(r.json())))
 
     @validate_token
@@ -381,44 +400,41 @@ class O365ManagementApi:
         # must query to pull down those lob blobs. When you list
         # content, you actually list the blob locations.  You must
         # then go pull down the contents of those log blob locations
-        blob_locations = [blob_info for blob_info in r.json()]
-        for blob_content in blob_locations:
-            print(blob_content)
-            try:
-                self._get_content(blob_content)
-            except Exception as e:
-                self._log_writer(logging.exception, "{}".format(e))
 
+        blob_locations = [blob_info for blob_info in r.json()]
+
+        count = 0
+
+        for blob_content in blob_locations:
+            # TODO - need to build in retry process... ???
+            self._get_content(blob_content)
             # Format each individual event to contain the metadata
             # and then write to file.
-            # TODO - handle error handling for write function
             for event in blob_content['contentData']:
-                count = 0
-                while True and (count < 3):
-                    try:
-                        event['contentType'] = blob_content['contentType']
-                        event['contentUri'] = blob_content['contentUri']
-                        event['contentId'] = blob_content['contentId']
-                    except TypeError:
-                        # print("TYPE ERROR")
-                        if event == 'error' and count < 2:
-                            # TODO - Probably too many requests. LOG IT
-                            print(json.dumps(blob_content))
-                            print("Sleeping count was {}".format(str(count)))
-                            count += 1
-                            time.sleep(15)
-                            continue
-                        elif count == 2:
-                            #TODO - Log that there was an issue with retries
-                            print("Issue with retries...")
-                            break
-                        else:
-                            break
-                    break
-                local_log_file = os.path.join(
-                    self.log_location, "{}.log".format(event['contentType']))
-                with open(local_log_file, 'a+') as write_file:
-                    write_file.write("{}\n".format(json.dumps(event)))
+                try:
+                    self._format_event(event, blob_content)
+                    self._write_event_to_file(event)
+                except Exception as e:
+                    self._log_writer(
+                        logging.exception,
+                        "Excpetion when writing {}"
+                        "".format(json.dumps(event))
+                    )
+                        
+
+
+    
+    @staticmethod
+    def _format_event(event, blob_content):
+            event['contentType'] = blob_content['contentType']
+            event['contentUri'] = blob_content['contentUri']
+            event['contentId'] = blob_content['contentId']
+
+    def _write_event_to_file(self, event):
+        local_log_file = os.path.join(
+            self.log_location, "{}.log".format(event['contentType']))
+        with open(local_log_file, 'a+') as write_file:
+            write_file.write("{}\n".format(json.dumps(event)))
 
     @validate_token
     def _get_content(self, blob_meta):
@@ -434,8 +450,8 @@ class O365ManagementApi:
             print(uri)
             r = requests.get(uri, params=parameters, headers=headers)
             blob_meta['contentData'] = r.json()
-        except TypeError:
-            raise TypeError('blob_meta is not what you think...')
+        except Exception as e:
+            self._log_writer(logging.exception, "{}".format(e))
 
     def _get_last_log_time(self):
         file_wrapper = FileWrapper(os.path.join(self.time_location, 'time.log'))
