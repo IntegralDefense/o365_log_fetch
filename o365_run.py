@@ -35,6 +35,7 @@ if __name__ == '__main__':
 
         for content_type in api.content_types:
             api.retrieve_logs(content_type=content_type)
+        api.save_last_log_time()
             
     except Exception as e:
         # If an exception gets up here, it's serious. Log it and then
