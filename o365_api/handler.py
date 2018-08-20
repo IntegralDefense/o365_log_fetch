@@ -54,16 +54,13 @@ def validate_subscription(func):
     return wrapper
 
 
-# Main classes
-
-
 class O365ManagementApi:
     """
     Class to interface with the Office 365 Management Activity API
 
     https://manage.office.com/api/v1.0/{tenant_id}/activity/feed/{operation}
 
-    Overview of how we acquire logs:
+    Overview of how we acquire logs (post-authentication):
 
     1. Look to see if the content type (ex: Audit.Exchange) has an
         active subscription. If not, we attempt to start the
@@ -72,17 +69,18 @@ class O365ManagementApi:
         The locations are endpoints you can query to pull down a set
         of logs.
     3. Iterate through that list of log locations and pull down the
-        logs at each location i.e. 'endpoint. The group of log events
-        at each endpoint is known as a 'blob'. It consists of metadata
-        and then an object with multiple activity logs listed.
-    4. Add the blob metadata to each event in the blob and log it.
-        Example of metadata would be the URL that we pulled the
-        blob from or the content type that makes up the blob.
+        logs at each location i.e. 'endpoint'. The group of log events
+        at each endpoint is known as a 'blob'.
+    4. Add the blob metadata (from the list of available content) to
+        each event in the blob and log it. Example of metadata would
+        be the URL that we pulled the blob from or the content type
+        that makes up the blob.
 
     We use the 'validate_token' decorator to ensure each call has a
     valid token. If not, then we acquire a new access token. This
     should only be a factor when you are pulling large quantities
-    of data instead of in increments.
+    of data instead of in increments as the usual lifetime of the
+    Bearer token seems to be one hour.
 
     We risk running into an issue if we do not include the tenantID
     (uuid) in the API calls as 'PublisherIdentifier'. Microsoft's API
@@ -196,6 +194,11 @@ class O365ManagementApi:
         Uses the ADAL library from Microsoft to authenticate
         via Certificate-based Client Credentials.
 
+        1. Send signed JWT token to Azure Active Directory.
+        2. If JWT token is verified, you will receive an access token
+            which can be used to query the O365 Management Activity
+            API.
+
         http://adal-python.readthedocs.io/en/latest/
         https://github.com/AzureAD/azure-activedirectory-library-for-python/
             wiki/ADAL-basics
@@ -203,8 +206,6 @@ class O365ManagementApi:
             wiki/Acquire-tokens
         https://github.com/AzureAD/azure-activedirectory-library-for-python/
             blob/dev/sample/certificate_credentials_sample.py#L59-L68
-
-
 
         Returns
         ----------
@@ -392,7 +393,7 @@ class O365ManagementApi:
         True
             Returned if the subscription was successfully started.
         False
-            Returned if the subscriptioin was not successfully started.
+            Returned if the subscription was not successfully started.
         """
 
         uri = "{0}/subscriptions/start".format(
@@ -434,7 +435,7 @@ class O365ManagementApi:
         """
         Gets the logs from O365 Management Activity API.
 
-        You can specify the specific content type You can add start/end
+        You can specify the content type. You can add start/end
         times as well if using a cron job and require logs at a smaller
         interval than the default of 24 hours. The time is acquired in
         this order during the O365ManagementApi object creation:
@@ -500,11 +501,10 @@ class O365ManagementApi:
 
         blob_locations = [blob_info for blob_info in r.json()]
 
-        count = 0
-
         for blob_content in blob_locations:
             # TODO - need to build in retry process... ???
             self._get_content(blob_content)
+
             # Format each individual event to contain the metadata
             # and then write to file.
             for event in blob_content['contentData']:
@@ -575,7 +575,7 @@ class O365ManagementApi:
             Holds the endpoing and other metadata about the events
             contained in the blob.
         """
-        
+
         try:
             uri = blob_meta['contentUri']
             headers = {
@@ -592,8 +592,23 @@ class O365ManagementApi:
             self._log_writer(logging.exception, "{}".format(e))
 
     def _get_last_log_time(self):
+        """
+        Pulls the last 'end-time' of this program. This is handy if the
+        system may have missed a cron job run and the time elapsed
+        since the last run is greater than ten minutes.
+
+        Returns
+        ----------
+        epoch_time: int
+            Last 'end-time' of this program
+        None
+            File wasn't found or the contents in the file couldn't be
+            converted to an integer.
+        """
+
         try:
-            file_wrapper = FileWrapper(os.path.join(self.time_location, 'time.log'))
+            file_wrapper = FileWrapper(os.path.join(
+                self.time_location, 'time.log'))
             with file_wrapper.open() as time_file:
                 epoch_time = time_file.readline()
                 return int(epoch_time)
@@ -604,17 +619,42 @@ class O365ManagementApi:
         """
         Saves the end-time defined for the current run of the program.
 
+        Parameters
+        ----------
+        format_: str
+            Format you wish the string output to be in
 
-        :return:
+        Returns
+        ----------
+        datetime string
+            String format of the datetime object.
         """
+
         file_wrapper = FileWrapper(os.path.join(self.time_location, 'time.log'))
         with file_wrapper.open('w') as time_file:
             time_file.write(str(self.end_time))
 
     def _start_epoch_to_readable_str(self, format_):
+        """
+        Returns readable string of current program's start_time value.
+
+        Parameters
+        ----------
+        format_: str
+            Format you wish the string output to be in
+
+        Returns
+        ----------
+        datetime string
+            String format of the datetime object.
+        """
+
         return datetime.fromtimestamp(int(self.start_time)).strftime(format_)
 
     def _end_epoch_to_readable_str(self, format_):
+        """
+        Returns readable string of current program's end_time value.
+        """
         return datetime.fromtimestamp(int(self.end_time)).strftime(format_)
 
     def _log_writer(self, log_type, message):
@@ -630,4 +670,5 @@ class O365ManagementApi:
         message: str
             Message to be written to the log
         """
+
         log_type("JobId={0} {1}".format(self.run_id, message))
