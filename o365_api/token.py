@@ -23,6 +23,15 @@ class O365Token:
         )
 
     def return_authorization_string(self):
+        """
+        Returns formatted HTTP Auth string.
+
+        Returns
+        ----------
+        Authorization string:
+            Ex: "Bearer LFunBvIzcwxIk9nwoRXtuXaetsR3qnXy59L3O_n10F-h"
+        """
+
         return "{0} {1}".format(self.tokenType, self.accessToken)
 
 
@@ -31,9 +40,9 @@ def validate_token(func):
     Decorator which checks to see if current token has expired.
     If token has expired, it renews the token before performing
     the requested action against the O365 Activity API.
-    :param func:
-    :return:
+
     """
+
     def wrapper(*args, **kwargs):
         # args[0] should be O365ManagementApi (self) because this function is
         # called from the O365ManagementApi class.
