@@ -34,8 +34,8 @@ if __name__ == '__main__':
         api = O365ManagementApi(config_parser, start, end, run_id)
 
         for content_type in api.content_types:
-            print("Getting {}".format(content_type))
             api.retrieve_logs(content_type=content_type)
+        api.save_last_log_time()
             
     except Exception as e:
         # If an exception gets up here, it's serious. Log it and then
