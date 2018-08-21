@@ -1,8 +1,9 @@
 from uuid import uuid4
 import argparse
-
 import logging
 import os
+
+from dotenv import load_dotenv
 
 from o365_api.argparsing import add_arg_parser_args
 from o365_api.handler import O365ManagementApi
@@ -11,6 +12,8 @@ from o365_api.wrappers import ParserWrapper
 
 
 if __name__ == '__main__':
+
+    load_dotenv(override=True)
 
     run_id = uuid4()
     try:

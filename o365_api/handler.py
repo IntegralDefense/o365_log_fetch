@@ -489,8 +489,9 @@ class O365ManagementApi:
             'startTime': self._start_epoch_to_readable_str('%Y-%m-%dT%H:%M:%S'),
             'endTime': self._end_epoch_to_readable_str('%Y-%m-%dT%H:%M:%S')
         }
-        print("Begin run. Range: {} to {}".format(
-                  parameters['startTime'], parameters['endTime']))
+        run_string = ("Begin run. Range: {} to {}".format(
+                      parameters['startTime'], parameters['endTime']))
+        self._log_writer(logging.info, run_string)
         r = requests.get(uri, params=parameters, headers=headers)
 
         # Log blobs are groups of events that can be pulled from the
@@ -585,7 +586,6 @@ class O365ManagementApi:
                 'PublisherIdentifier': self.config.get_option(
                     'API_SETTINGS', 'tenantId')
             }
-            print(uri)
             r = requests.get(uri, params=parameters, headers=headers)
             blob_meta['contentData'] = r.json()
         except Exception as e:
@@ -607,8 +607,8 @@ class O365ManagementApi:
         """
 
         try:
-            file_wrapper = FileWrapper(os.path.join(
-                self.time_location, 'time.log'))
+            file_wrapper = FileWrapper(
+                os.path.join(self.time_location, 'time.log'))
             with file_wrapper.open() as time_file:
                 epoch_time = time_file.readline()
                 return int(epoch_time)
