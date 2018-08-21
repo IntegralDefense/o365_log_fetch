@@ -5,9 +5,11 @@ cffi==1.11.5
 chardet==3.0.4
 cryptography==2.3
 idna==2.7
+pkg-resources==0.0.0
 pycparser==2.18
 PyJWT==1.6.4
 python-dateutil==2.7.3
+python-dotenv==0.9.1
 requests==2.19.1
 six==1.11.0
 urllib3==1.23
