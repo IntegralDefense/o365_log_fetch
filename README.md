@@ -53,5 +53,4 @@ The locations you wish log to.
   
   debugLogLocation - The directory you want the script logging to be stored. Ex: Exceptions, errors, etc.
   
-#### TimeTracker
-timeKeeper - The file path where the program will store the 'end-time' of the current run. This is used as persistent storage so that if this program misses a cycle (ex: cron job does not run properly), we can pickup the logs where we last left off.
+  timeKeeperLocation -  The file path where the program will store the 'end-time' of the current run. This is used as persistent storage so that if this program misses a cycle (ex: cron job does not run properly), we can pickup the logs where we last left off.
