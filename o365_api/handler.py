@@ -334,7 +334,7 @@ class O365ManagementApi:
         """
 
         if content_type not in enabled_content_types:
-            self._log_writer(logging.WARN, "No subscription for {}."
+            self._log_writer(logging.warn, "No subscription for {}."
                                            "".format(content_type))
             if self.start_subscription(content_type):
                 return True
