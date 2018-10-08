@@ -102,3 +102,9 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+o365_logs.cfg
+*key.pem
+
+#vscode
+launch.json
+settings.json

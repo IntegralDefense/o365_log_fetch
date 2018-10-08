@@ -1,10 +1,13 @@
+from urllib.parse import urljoin
 from datetime import datetime
+import asyncio
 import json
 import logging
 import os
 import time
 
 import adal
+import aoihttp
 import requests
 
 from o365_api.wrappers import FileWrapper
@@ -165,20 +168,18 @@ class O365ManagementApi:
         """
 
         self.config = config_parser
-        self.log_location = self.config.get_option('LOGGING', 'baseLogLocation')
-        self.debug_location = self.config.get_option(
-            'LOGGING', 'debugLogLocation')
-        self.time_location = self.config.get_option(
-            'LOGGING', 'timeKeeperLocation')
-        self.authority_url = ("{0}/{1}".format(
-            self.config.get_option('API_SETTINGS', 'authorityHostUrl'),
-            self.config.get_option('API_SETTINGS', 'tenant')
-        ))
-        self.key = self.get_private_key(
-            self.config.get_option('API_SETTINGS', 'privateKeyFile')
+        self.log_location = self._get_logging_setting('baseLogLocation')
+        self.debug_location = self._get_logging_setting('debugLogLocation')
+        self.time_location = self._get_logging_setting('timeKeeperLocation')
+        self.authority_url = urljoin(
+            self._get_api_setting('authorityHostUrl'),
+            self._get_api_setting('tenant')
         )
+        self.key = self.get_private_key()
         self.content_types = self.config.get_all_option_values_in_section(
             'ContentTypes')
+        self.pub_id = self._get_api_setting('tenantId')
+        self.root_api = self._get_api_setting('activityApiRoot')
         self.start_time = (start_time
                            or self._get_last_log_time()
                            or (int(time.time()) - 600)
@@ -186,6 +187,14 @@ class O365ManagementApi:
         self.end_time = end_time or int(time.time())
         self.token = self.get_token()
         self.run_id = run_id
+        self.loop = None
+        self.session = None
+
+    def _get_api_setting(self, setting):
+        return self.config.get_option('API_SETTINGS', setting)
+
+    def _get_logging_setting(self, setting):
+        return self.config.get_option('LOGGING', setting)
 
     def get_token(self):
         """
@@ -219,16 +228,15 @@ class O365ManagementApi:
         )
 
         token = context.acquire_token_with_client_certificate(
-            self.config.get_option('API_SETTINGS', 'resource'),
-            self.config.get_option('API_SETTINGS', 'clientID'),
+            self._get_api_setting('resource'),
+            self._get_api_setting('clientID'),
             self.key,
-            self.config.get_option('API_SETTINGS', 'thumbprint')
+            self._get_api_setting('thumbprint'),
         )
 
         return O365Token(token)
 
-    @staticmethod
-    def get_private_key(file_name, file_wrapper=None):
+    def get_private_key(self, file_wrapper=None):
         """
         Reads the private key file and returns as a string
 
@@ -245,10 +253,103 @@ class O365ManagementApi:
             Returns a string representation of the private key
         """
 
-        file_wrap = file_wrapper or FileWrapper(file_name)
+        key_file = self._get_api_setting('privateKeyFile')
+        file_wrap = file_wrapper or FileWrapper(key_file)
         with file_wrap.open() as pem_file:
             private_pem = pem_file.read()
             return private_pem
+
+    async def run(self, loop):
+        self.loop = loop
+        async with aoihttp.ClientSession(loop=loop) as session:
+            self.session = session
+            coroutine_ = self._o365_log_foreman()
+            asyncio.gather(coroutine_, loop=self.loop)
+
+    async def _o365_log_foreman(self):
+        await self._handle_subscriptions()
+        await self._get_logs()
+        self._write_logs()
+
+    async def _handle_subscriptions(self):
+        uri = "{0}/subscriptions/list".format(
+            self.config.get_option('API_SETTINGS', 'activityApiRoot'))
+        headers = {'Authorization': self.token.return_authorization_string()}
+        parameters = {'PublisherIdentifier': self.pub_id}
+
+        r_json, _ = await self._api_call(
+            url=uri, headers=headers, params=parameters
+        )
+        
+        active_subs = self._list_active_subs(r_json)
+
+        inactive_sub_tasks = self._coroutines_for_subs(active_subs)
+
+        if inactive_sub_tasks:
+            asyncio.gather(*inactive_sub_tasks, loop=self.loop)
+        
+    def _coroutines_for_subs(self, active_subs_):
+        coroutines_ = []
+        for content_type in self.content_types:
+            if content_type not in active_subs_:
+                coroutines_.append(self._start_subscription(content_type))
+        return coroutines_
+
+    async def _start_subscription(self, content_type):
+        uri = urljoin(self.root_api, 'subscriptions', 'start')
+        headers = {
+            'Authorization': self.token.return_authorization_string(),
+            'Content-Type': 'application/json'
+        }
+        parameters = {
+            'contentType': content_type,
+            'PublisherIdentifier': self.pub_id,
+        }
+        body = '{}'
+        remaining_attempts = 3
+        while remaining_attempts:
+            json_, header_ = await self._api_post(url=uri, headers=headers,
+                                                  params=parameters, data=body)
+            if self._sub_start_successful(json_, header_):
+                # TODO - Log that it was successful
+                break
+            remaining_attempts -= 1
+            if not remaining_attempts:
+                # TODO - Log that subscription couldn't be started
+                pass
+
+    def _sub_start_successful(self, json_, header_):
+        pass
+    
+    def _list_active_subs(json_):
+        try:
+            active_subs = []
+            for subscription in json_:
+                if subscription['status'] == 'enabled':
+                    active_subs.append(subscription['contentType'])
+        except TypeError:
+            raise TypeError('Unexpected Message when checking subscription:'
+                            ' {}'.format(response.text))
+        except KeyError:
+            raise KeyError(
+                'status or contentType key missing response from subscription'
+                ' list API.'
+            )
+        else:
+            return active_subs
+
+    async def _api_get(self, **kwargs):
+        async with self.session.get(**kwargs) as response:
+            json_ = await response.json()
+            headers_ = await response.headers
+            return json_, headers_
+
+    async def _api_post(self, **kwargs):
+        async with self.session.post(**kwargs) as response:
+            json_ = await response.json()
+            headers_ = await response.headers
+            return json_, headers_
+
 
     @validate_token
     def check_subscription(self, content_type):
