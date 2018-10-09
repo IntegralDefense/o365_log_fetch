@@ -7,11 +7,11 @@ import os
 import time
 
 import adal
-import aoihttp
-import requests
+import aiohttp
+# import requests
 
 from o365_api.wrappers import FileWrapper
-from o365_api.token import O365Token, validate_token
+from o365_api.token import O365Token
 
 """
 http://adal-python.readthedocs.io/en/latest/
@@ -180,15 +180,32 @@ class O365ManagementApi:
             'ContentTypes')
         self.pub_id = self._get_api_setting('tenantId')
         self.root_api = self._get_api_setting('activityApiRoot')
-        self.start_time = (start_time
-                           or self._get_last_log_time()
-                           or (int(time.time()) - 600)
-                           )
+        self.start_time = (
+            start_time or self._get_last_log_time() or (int(time.time()) - 600)
+        )
         self.end_time = end_time or int(time.time())
+        # Microsoft recommends no more than 24 hrs when listing available
+        # content endpoints.
+        self.windows = self._split_time_into_24_hr_chunks()
         self.token = self.get_token()
         self.run_id = run_id
         self.loop = None
         self.session = None
+        self.inactive_subscriptions = []
+        self.content_locations = {}
+        self.events = {}
+
+    def _split_time_into_24_hr_chunks(self):
+        window = int(self.end_time) - int(self.start_time)
+        list_ = []
+        start = int(self.start_time)
+        while window > 86400:
+            end = start + 86400
+            list_.append({'start': start, 'end': end})
+            start = end
+            window -= 86400
+        list_.append({'start': start, 'end': int(self.end_time)})
+        return list_
 
     def _get_api_setting(self, setting):
         return self.config.get_option('API_SETTINGS', setting)
@@ -259,98 +276,259 @@ class O365ManagementApi:
             private_pem = pem_file.read()
             return private_pem
 
+    # API CALLS #
+
     async def run(self, loop):
         self.loop = loop
-        async with aoihttp.ClientSession(loop=loop) as session:
+        async with aiohttp.ClientSession(loop=loop) as session:
             self.session = session
-            coroutine_ = self._o365_log_foreman()
-            asyncio.gather(coroutine_, loop=self.loop)
+            coroutine_ = self.o365_log_foreman()
+            await asyncio.gather(coroutine_, loop=self.loop)
 
-    async def _o365_log_foreman(self):
-        await self._handle_subscriptions()
-        await self._get_logs()
-        self._write_logs()
+    async def o365_log_foreman(self):
+        await self.handle_subscriptions()
+        await self.get_logs()
 
-    async def _handle_subscriptions(self):
-        uri = "{0}/subscriptions/list".format(
-            self.config.get_option('API_SETTINGS', 'activityApiRoot'))
-        headers = {'Authorization': self.token.return_authorization_string()}
-        parameters = {'PublisherIdentifier': self.pub_id}
+    # ##### SUBSCRIPTIONS - ASYNC methods
 
-        r_json, _ = await self._api_call(
-            url=uri, headers=headers, params=parameters
-        )
-        
-        active_subs = self._list_active_subs(r_json)
+    async def handle_subscriptions(self):
+        http_args = {
+            'url': urljoin(self.root_api, 'subscriptions/list'),
+            'headers': {
+                'Authorization': self.token.return_authorization_string()
+            },
+            'params': {'PublisherIdentifier': self.pub_id},
+        }
 
-        inactive_sub_tasks = self._coroutines_for_subs(active_subs)
+        r_json, _ = await self._api_get(**http_args)
+        # Get inactive subscriptions
+        inactive_subs = self._get_inactive_subscriptions(r_json)
+        # Activate inactive subscriptions
+        await self._activate_inactive_subscriptions(inactive_subs)
 
+    async def _activate_inactive_subscriptions(self, inactive_subs_):
+        if not inactive_subs_:
+            return
+        inactive_sub_tasks = self._coroutines_for_subs(inactive_subs_)
         if inactive_sub_tasks:
-            asyncio.gather(*inactive_sub_tasks, loop=self.loop)
-        
-    def _coroutines_for_subs(self, active_subs_):
-        coroutines_ = []
-        for content_type in self.content_types:
-            if content_type not in active_subs_:
-                coroutines_.append(self._start_subscription(content_type))
-        return coroutines_
+            await asyncio.gather(*inactive_sub_tasks, loop=self.loop)
 
     async def _start_subscription(self, content_type):
-        uri = urljoin(self.root_api, 'subscriptions', 'start')
-        headers = {
-            'Authorization': self.token.return_authorization_string(),
-            'Content-Type': 'application/json'
-        }
-        parameters = {
-            'contentType': content_type,
-            'PublisherIdentifier': self.pub_id,
-        }
-        body = '{}'
+        api_args = self._start_subscription_args(content_type)
+        await self._start_subscription_attempt_loop(**api_args)
+
+    async def _start_subscription_attempt_loop(self, **kwargs):
         remaining_attempts = 3
         while remaining_attempts:
-            json_, header_ = await self._api_post(url=uri, headers=headers,
-                                                  params=parameters, data=body)
+            attempt_num = str(4 - remaining_attempts)
+            logging.info('Subscription start attempt {}'.format(attempt_num))
+            json_, header_ = await self._api_post(**kwargs)
             if self._sub_start_successful(json_, header_):
-                # TODO - Log that it was successful
+                logging.info(
+                    'Subscription started successfully for {0}'
+                    ''.format(kwargs['params']['contentType'])
+                )
                 break
             remaining_attempts -= 1
             if not remaining_attempts:
-                # TODO - Log that subscription couldn't be started
-                pass
+                logging.error(
+                    'Subscription for \'{0}\' could not be started after 3 '
+                    'attempts. No logs will be gathered for this content '
+                    'type.'.format(kwargs['params']['contentType'])
+                )
+                self.inactive_subscriptions.append(
+                    kwargs['params']['contentType']
+                )
+
+    async def _api_get(self, content_type='application/json', encoding=None, **kwargs):
+        async with self.session.get(ssl=False, **kwargs) as r:
+            if r.status != 200:
+                raise ValueError(
+                    'API call returned status that was not 200 - Status: {},'
+                    ' Reason: {}, URL: {}, Headers: {}'
+                    ''.format(r.status, r.reason, r.url, r.headers)
+                )
+            json_ = await r.json(content_type=content_type, encoding=encoding)
+            headers_ = r.headers
+            if r.status != 200:
+                logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
+            return json_, headers_
+
+    async def _api_post(self, content_type='application/json', encoding=None, **kwargs):
+        async with self.session.post(ssl=False, **kwargs) as r:
+            json_ = await r.json(content_type=content_type, encoding=encoding)
+            headers_ = r.headers
+            if r.status != 200:
+                logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
+            return json_, headers_
+
+    # ##### SUBSCRIPTIONS - Syncronous methods
+
+    def _get_inactive_subscriptions(self, r_json):
+        try:
+            inactive_subs = self._list_inactive_subs(r_json)
+        except (TypeError, KeyError) as e:
+            logging.exception(
+                'Failure while checking for inactive subscriptions. List '
+                'subscription API call response: {}'.format(r_json)
+            )
+            raise
+        else:
+            length = len(inactive_subs)
+            logging.info(
+                'There are {} inactive subscriptions.'.format(length)
+            )
+            return inactive_subs
+
+    def _coroutines_for_subs(self, inactive_subs):
+        coroutines_ = []
+        for content_type in self.content_types:
+            if content_type in inactive_subs:
+                coroutines_.append(self._start_subscription(content_type))
+        return coroutines_
+
+    def _start_subscription_args(self, content_type):
+        http_args = {
+            'url': urljoin(self.root_api, 'subscriptions/start'),
+            'headers': {
+                'Authorization': self.token.return_authorization_string(),
+                'Content-Type': 'application/json',
+            },
+            'params': {
+                'contentType': content_type,
+                'PublisherIdentifier': self.pub_id,
+            },
+            'data': '{}',
+        }
+        return http_args
 
     def _sub_start_successful(self, json_, header_):
-        pass
-    
-    def _list_active_subs(json_):
         try:
-            active_subs = []
-            for subscription in json_:
-                if subscription['status'] == 'enabled':
-                    active_subs.append(subscription['contentType'])
-        except TypeError:
-            raise TypeError('Unexpected Message when checking subscription:'
-                            ' {}'.format(response.text))
+            if json_['status'] != 'enabled':
+                return False
         except KeyError:
-            raise KeyError(
-                'status or contentType key missing response from subscription'
-                ' list API.'
+            logging.error(
+                "Error when trying to start subsciption. Actual response: {0}"
+                "".format(json.dumps(json_))
             )
+            return False
         else:
-            return active_subs
+            return True
 
-    async def _api_get(self, **kwargs):
-        async with self.session.get(**kwargs) as response:
-            json_ = await response.json()
-            headers_ = await response.headers
-            return json_, headers_
+    def _list_inactive_subs(self, json_):
+        inactive_subs = []
+        for subscription in json_:
+            try:
+                if subscription['status'] != 'enabled':
+                    inactive_subs.append(subscription['contentType'])
+            except TypeError as t:
+                raise TypeError(
+                    'Unexpected Message when checking subscription:'
+                    ' {}'.format(t.message)
+                )
+            except KeyError:
+                raise KeyError(
+                    'status or contentType key missing response from '
+                    'subscription list API.'
+                )
+        return inactive_subs
 
-    async def _api_post(self, **kwargs):
-        async with self.session.post(**kwargs) as response:
-            json_ = await response.json()
-            headers_ = await response.headers
-            return json_, headers_
+    # ##### Get_logs - Async
 
+    async def get_logs(self):
+        coroutines = []
+        for type_ in self.content_types:
+            if type_ in self.inactive_subscriptions:
+                continue
+            for window in self.windows:
+                coroutines.append(self._get_logs(type_, win=window))
 
+        await asyncio.gather(*coroutines, loop=self.loop)
+
+    async def _get_logs(self, type_, win=None, endpoint=None):
+        await self._get_locations(type_, win=win, endpoint=endpoint)
+        await self._get_contents(type_)
+        self._write_events(type_)
+
+    def _write_events_to_file(self, type_):
+        """
+        Writes the single event to a log file based on the content
+        type of the event.
+
+        Parameters
+        ----------
+        event: dict
+            Dictonary containing the event payload and metadata.
+            Will be written to file in JSON format.
+        """
+        for event in self.events[type_]:
+            file_name = "{}.log".format(type_)
+            file_path = os.path.join(self.log_location, file_name)
+        with open(file_path, 'a+') as write_file:
+            write_file.write("{}\n".format(json.dumps(event)))
+
+    async def _get_contents(self, type_):
+        locations = [loc for loc in self.content_locations[type_]]
+        coroutines = [
+            self._get_log_content(type_, location) for location in locations
+        ]
+        await asyncio.gather(*coroutines, loop=self.loop)
+
+    async def _get_log_content(self, type_, location):
+        http_args = {
+            'url': location['contentUri'],
+            'headers': {
+                'Authorization': self.token.return_authorization_string(),
+            },
+            'params': {
+                'PublisherIdentifier': self.pub_id,
+            },
+        }
+        json_, _ = await self._api_get(content_type='text/html', **http_args)
+
+        self.events[type_] = []
+
+        for log in json_:
+            event = {**log, **location}
+            self.events[type_] += event
+
+    async def _get_locations(self, type_, win=None, endpoint=None):
+        http_args = self._location_args(type_, window=win, endpoint=endpoint)
+
+        if not endpoint:
+            self.content_locations[type_] = []
+
+        locations_list, r_headers = await self._api_get(**http_args)
+        self.content_locations[type_] += locations_list
+
+        if 'NextPageUri' in r_headers:
+            next_endpoint = r_headers['NextPageUri']
+            await self._get_logs(type_, endpoint=next_endpoint)
+
+    def _location_args(self, type_, window=None, endpoint=None):
+        if not endpoint:
+            http_args = {
+                'url': urljoin(self.root_api, 'subscriptions/content'),
+                'headers': {
+                    'Authorization': self.token.return_authorization_string()
+                },
+                'params': {
+                    'PublisherIdentifier': self.pub_id,
+                    'contentType': type_,
+                    'startTime': self._start_str(window),
+                    'endTime': self._end_str(window)
+                }
+            }
+        else:
+            http_args = {
+                'url': endpoint,
+                'headers': {
+                    'Authorization': self.token.return_authorization_string()
+                },
+            }
+        return http_args
+
+    '''
     @validate_token
     def check_subscription(self, content_type):
         """
@@ -410,7 +588,8 @@ class O365ManagementApi:
                 time.sleep(5)
         return True
 
-    def start_subscription_if_needed(self, content_type, enabled_content_types):
+    def start_subscription_if_needed(
+            self, content_type, enabled_content_types):
         """
         Checks to see if content_type subscription is in the enabled
         list. If so, continue, if not, then try to start the
@@ -587,7 +766,9 @@ class O365ManagementApi:
             'PublisherIdentifier': self.config.get_option(
                 'API_SETTINGS', 'tenantId'),
             'contentType': content_type,
-            'startTime': self._start_epoch_to_readable_str('%Y-%m-%dT%H:%M:%S'),
+            'startTime': self._start_epoch_to_readable_str(
+                '%Y-%m-%dT%H:%M:%S'
+            ),
             'endTime': self._end_epoch_to_readable_str('%Y-%m-%dT%H:%M:%S')
         }
         run_string = ("Begin run. Range: {} to {}".format(
@@ -620,9 +801,6 @@ class O365ManagementApi:
                         "".format(json.dumps(event))
                     )
 
-
-
-    
     @staticmethod
     def _add_meta_data_to_each_event(event, blob_content):
         """
@@ -691,7 +869,7 @@ class O365ManagementApi:
             blob_meta['contentData'] = r.json()
         except Exception as e:
             self._log_writer(logging.exception, "{}".format(e))
-
+    '''
     def _get_last_log_time(self):
         """
         Pulls the last 'end-time' of this program. This is handy if the
@@ -731,11 +909,13 @@ class O365ManagementApi:
             String format of the datetime object.
         """
 
-        file_wrapper = FileWrapper(os.path.join(self.time_location, 'time.log'))
+        file_wrapper = FileWrapper(
+            os.path.join(self.time_location, 'time.log')
+        )
         with file_wrapper.open('w') as time_file:
             time_file.write(str(self.end_time))
 
-    def _start_epoch_to_readable_str(self, format_):
+    def _start_str(self, window):
         """
         Returns readable string of current program's start_time value.
 
@@ -749,15 +929,20 @@ class O365ManagementApi:
         datetime string
             String format of the datetime object.
         """
+        start = int(window['start'])
+        format_ = '%Y-%m-%dT%H:%M:%S'
+        return datetime.fromtimestamp(start).strftime(format_)
 
-        return datetime.fromtimestamp(int(self.start_time)).strftime(format_)
-
-    def _end_epoch_to_readable_str(self, format_):
+    def _end_str(self, window):
         """
         Returns readable string of current program's end_time value.
         """
-        return datetime.fromtimestamp(int(self.end_time)).strftime(format_)
 
+        end = int(window['end'])
+        format_ = '%Y-%m-%dT%H:%M:%S'
+        return datetime.fromtimestamp(end).strftime(format_)
+
+    '''
     def _log_writer(self, log_type, message):
         """
         Prepends 'JobId' to the log being written.
@@ -773,3 +958,4 @@ class O365ManagementApi:
         """
 
         log_type("JobId={0} {1}".format(self.run_id, message))
+    '''

@@ -1,4 +1,5 @@
 from uuid import uuid4
+import asyncio
 import argparse
 import logging
 import os
@@ -38,12 +39,13 @@ if __name__ == '__main__':
 
         api = O365ManagementApi(config_parser, start, end, run_id)
 
-        # loop = asynio.get_event_loop()
-        # loop.run_until_complete(api.run(loop))
-        # 
-
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(api.run(loop))
+        loop.close()
+        '''
         for content_type in api.content_types:
             api.retrieve_logs(content_type=content_type)
+        '''
         api.save_last_log_time()
         end_total = time.time()
     except Exception as e:
