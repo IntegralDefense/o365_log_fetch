@@ -1,7 +1,9 @@
 from uuid import uuid4
+import asyncio
 import argparse
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -17,9 +19,11 @@ if __name__ == '__main__':
 
     run_id = uuid4()
     try:
+        begin_total = time.time()
         # Get configuration
         config_file = os.environ.get('O365_MANAGEMENT_API_CONFIG')
-        setup_logger()
+        log_level = os.environ.get('O365_LOG_LEVEL', 'INFO')
+        setup_logger(log_level=log_level)
         config_parser = ParserWrapper(config_file)
 
         # Interact with arguments
@@ -36,14 +40,22 @@ if __name__ == '__main__':
 
         api = O365ManagementApi(config_parser, start, end, run_id)
 
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(api.run(loop))
+        loop.close()
+        '''
         for content_type in api.content_types:
             api.retrieve_logs(content_type=content_type)
+        '''
         api.save_last_log_time()
-            
+        end_total = time.time()
     except Exception as e:
         # If an exception gets up here, it's serious. Log it and then
         # let it bubble up like normal.
         logging.exception("JobId={0} {1}".format(run_id, e))
         raise
+    else:
+        runtime = str(int(end_total - begin_total))
+        logging.info('Total runtime: {} seconds.'.format(runtime))
 
     exit()

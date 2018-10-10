@@ -7,6 +7,7 @@ resource = https://manage.office.com
 thumbprint = <Thumprint from Public Key associated with app in Azure AD>
 privateKeyFile = <Location of private key used to sign JWT assertions and acquire Access Tokens>
 activityApiRoot = %(resource)s/api/v1.0/%(tenantId)s/activity/feed
+autoStartSubscriptions = True/False
 
 # List of content types in O365 Managment Activity API
 [ContentTypes]
