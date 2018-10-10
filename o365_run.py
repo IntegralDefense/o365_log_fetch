@@ -55,7 +55,7 @@ if __name__ == '__main__':
         logging.exception("JobId={0} {1}".format(run_id, e))
         raise
     else:
-        print('Total time is {} seconds...'
-              ''.format(str(int(end_total - begin_total))))
+        runtime = str(int(end_total - begin_total))
+        logging.info('Total runtime: {} seconds.'.format(runtime))
 
     exit()
