@@ -27,34 +27,6 @@ blob/dev/sample/certificate_credentials_sample.py#L59-L68
 """
 
 
-# Decorators for O365 API communication
-
-
-def validate_subscription(func):
-    """
-    Checks to make sure subscription is running.  If not, start it up.
-
-    A subscription is required in order to pull logs from a specific
-    content type. If you do not have a subscription running, you will
-    not be able to pull the logs down and those logs are not stored to
-    be pulled down.
-
-    https://docs.microsoft.com/en-us/office/office-365-management-api/
-    office-365-management-activity-api-reference#start-a-subscription
-
-    https://docs.microsoft.com/en-us/office/office-365-management-api/
-    office-365-management-activity-api-reference#list-current-subscriptions
-    """
-
-    def wrapper(*args, **kwargs):
-        if not args[0].check_subscription(kwargs['content_type']):
-            raise ValueError("Subscription for {} is not enabled. Please "
-                             "enable in your Azure tenant"
-                             "".format(kwargs['content_type']))
-        else:
-            do_func = func(*args, **kwargs)
-        return do_func
-    return wrapper
 
 
 class O365ManagementApi:
@@ -194,6 +166,7 @@ class O365ManagementApi:
         self.inactive_subscriptions = []
         self.content_locations = {}
         self.events = {}
+        self.events_count = {}
 
     def _split_time_into_24_hr_chunks(self):
         window = int(self.end_time) - int(self.start_time)
@@ -205,6 +178,11 @@ class O365ManagementApi:
             start = end
             window -= 86400
         list_.append({'start': start, 'end': int(self.end_time)})
+        window_count = str(len(list_))
+        logging.info(
+            'This run will be broken up into {} sections: {}'
+            ''.format(window_count, json.dumps(list_))
+        )
         return list_
 
     def _get_api_setting(self, setting):
@@ -343,6 +321,7 @@ class O365ManagementApi:
     async def _api_get(self, content_type='application/json', encoding=None, **kwargs):
         async with self.session.get(ssl=False, **kwargs) as r:
             if r.status != 200:
+                logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
                 raise ValueError(
                     'API call returned status that was not 200 - Status: {},'
                     ' Reason: {}, URL: {}, Headers: {}'
@@ -350,16 +329,19 @@ class O365ManagementApi:
                 )
             json_ = await r.json(content_type=content_type, encoding=encoding)
             headers_ = r.headers
-            if r.status != 200:
-                logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
             return json_, headers_
 
     async def _api_post(self, content_type='application/json', encoding=None, **kwargs):
         async with self.session.post(ssl=False, **kwargs) as r:
-            json_ = await r.json(content_type=content_type, encoding=encoding)
-            headers_ = r.headers
             if r.status != 200:
                 logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
+                raise ValueError(
+                    'API call returned status that was not 200 - Status: {},'
+                    ' Reason: {}, URL: {}, Headers: {}'
+                    ''.format(r.status, r.reason, r.url, r.headers)
+                )
+            json_ = await r.json(content_type=content_type, encoding=encoding)
+            headers_ = r.headers
             return json_, headers_
 
     # ##### SUBSCRIPTIONS - Syncronous methods
@@ -440,6 +422,8 @@ class O365ManagementApi:
         for type_ in self.content_types:
             if type_ in self.inactive_subscriptions:
                 continue
+            self.events[type_] = []
+            self.events_count[type_] = 0
             for window in self.windows:
                 coroutines.append(self._get_logs(type_, win=window))
 
@@ -447,8 +431,14 @@ class O365ManagementApi:
 
     async def _get_logs(self, type_, win=None, endpoint=None):
         await self._get_locations(type_, win=win, endpoint=endpoint)
+        location_length = str(len(self.content_locations[type_]))
+        logging.info(
+            'Log type {} has total of {} locations'
+            ''.format(type_, location_length)
+        )
+
         await self._get_contents(type_)
-        self._write_events(type_)
+        self._write_events_to_file(type_)
 
     def _write_events_to_file(self, type_):
         """
@@ -461,11 +451,16 @@ class O365ManagementApi:
             Dictonary containing the event payload and metadata.
             Will be written to file in JSON format.
         """
-        for event in self.events[type_]:
+        try:
+            length = str(len(self.events[type_]))
+            logging.info('Writing {} events for {}'.format(length, type_))
             file_name = "{}.log".format(type_)
             file_path = os.path.join(self.log_location, file_name)
-        with open(file_path, 'a+') as write_file:
-            write_file.write("{}\n".format(json.dumps(event)))
+            with open(file_path, 'a+') as write_file:
+                for event in self.events[type_]:
+                    write_file.write("{}\n".format(json.dumps(event)))
+        except KeyError as k:
+            logging.info('Type {} has no events to write.'.format(type_))
 
     async def _get_contents(self, type_):
         locations = [loc for loc in self.content_locations[type_]]
@@ -473,6 +468,10 @@ class O365ManagementApi:
             self._get_log_content(type_, location) for location in locations
         ]
         await asyncio.gather(*coroutines, loop=self.loop)
+        logging.info(
+            'Log type {} received {} events in total'
+            ''.format(type_, self.events_count[type_])
+        )
 
     async def _get_log_content(self, type_, location):
         http_args = {
@@ -484,26 +483,40 @@ class O365ManagementApi:
                 'PublisherIdentifier': self.pub_id,
             },
         }
-        json_, _ = await self._api_get(content_type='text/html', **http_args)
+        json_, _ = await self._api_get(content_type=None, **http_args)
 
-        self.events[type_] = []
+        events_length = len(json_)
+        self.events_count[type_] += events_length
+        logging.debug(
+            'There were {} events in a location for {}'
+            ''.format(str(events_length), type_)
+        )
 
         for log in json_:
             event = {**log, **location}
-            self.events[type_] += event
 
-    async def _get_locations(self, type_, win=None, endpoint=None):
+            self.events[type_].append(event)
+
+    async def _get_locations(self, type_, win=None, endpoint=None, cnt=0):
         http_args = self._location_args(type_, window=win, endpoint=endpoint)
 
         if not endpoint:
             self.content_locations[type_] = []
 
         locations_list, r_headers = await self._api_get(**http_args)
+
+        length = str(len(locations_list))
+        logging.debug(
+            'Received {} locations on the {} iteration for type {}'
+            ''.format(length, str(cnt), type_)
+        )
+
         self.content_locations[type_] += locations_list
 
         if 'NextPageUri' in r_headers:
             next_endpoint = r_headers['NextPageUri']
-            await self._get_logs(type_, endpoint=next_endpoint)
+            cnt += 1
+            await self._get_locations(type_, endpoint=next_endpoint, cnt=cnt)
 
     def _location_args(self, type_, window=None, endpoint=None):
         if not endpoint:
@@ -528,348 +541,6 @@ class O365ManagementApi:
             }
         return http_args
 
-    '''
-    @validate_token
-    def check_subscription(self, content_type):
-        """
-        Checks to see if there is a subscription for the requested
-        content type.  If not, then enable it.
-
-        If the subscription is not enabled, this function will attempt
-        to start the subscription three times before raising a
-        ValueError.  It will also sleep for 5 seconds between attempts
-        in hopes that any communication issue would be a temporary
-        blip.
-
-        Parameters
-        ----------
-        content_type: str
-            Content type you are checking a subscription for.
-            Ex: Audit.Exchange, Audit.AzureActiveDirectory, etc.
-
-        Raises
-        ----------
-        ValueError
-            Three attempts to start the subscription have been made and
-            have failed.
-
-        Returns
-        ----------
-        True
-            Returns True if subscription is started. Will raise an
-            exception otherwise.
-        """
-
-        uri = "{0}/subscriptions/list".format(
-            self.config.get_option('API_SETTINGS', 'activityApiRoot'))
-        headers = {'Authorization': self.token.return_authorization_string()}
-        parameters = {
-            'PublisherIdentifier': self.config.get_option(
-                'API_SETTINGS', 'tenantId')
-        }
-        subscription_enabled = False
-        retry_count = 0
-        retry_limit = 3
-        while not subscription_enabled:
-            r = requests.get(uri, params=parameters, headers=headers)
-            enabled_content_types = self.get_enabled_content_types(r)
-            subscription_enabled = self.start_subscription_if_needed(
-                content_type, enabled_content_types)
-
-            if subscription_enabled:
-                break
-            else:
-                retry_count += 1
-
-            if retry_count == retry_limit:
-                raise ValueError("Attempts to start subscription for '{}' "
-                                 "have failed.".format(content_type))
-            else:
-                time.sleep(5)
-        return True
-
-    def start_subscription_if_needed(
-            self, content_type, enabled_content_types):
-        """
-        Checks to see if content_type subscription is in the enabled
-        list. If so, continue, if not, then try to start the
-        subscription.
-
-        Parameters
-        ----------
-        content_type: str
-            Content type in which we hope there is a subscription for.
-        enabled_content_types: list
-            List of content types that are do have an active
-            subscription.
-
-        Returns
-        ----------
-        True
-            If the subscription is enabled or if it was successfully
-            started.
-        False
-            No subscription enabled for content type and it was not
-            successfully started.
-        """
-
-        if content_type not in enabled_content_types:
-            self._log_writer(logging.warn, "No subscription for {}."
-                                           "".format(content_type))
-            if self.start_subscription(content_type):
-                return True
-            else:
-                return False
-        else:
-            return True
-
-    @staticmethod
-    def get_enabled_content_types(response):
-        """
-        Returns a list of content_types with an enabled subscription
-
-        Parameters
-        ----------
-        response: requests object
-            Requests response object which contains response from the
-            subscription endpoint.
-
-        Returns
-        ----------
-        list
-            List of content_types with an enabled subscription.
-        """
-
-        try:
-            return [subscription['contentType']
-                    for subscription in response.json()
-                    if subscription['status'] == 'enabled']
-        except TypeError:
-            raise TypeError(
-                'Unexpected Message when checking subscription: {}'.format(
-                    response.text)
-            )
-
-    @validate_token
-    def start_subscription(self, content_type):
-        """
-        Starts a subscription for the content_type.
-
-        Note that PublisherIdentifier is the GUID of the app writer,
-        not the app user.
-
-        https://docs.microsoft.com/en-us/office/office-365-management
-        -api/office-365-management-activity-api-reference#start-a-
-        subscription
-
-        Parameters
-        ----------
-        content_type: str
-            The content_type in which we are trying to start the
-            subscription for.
-
-        Return
-        ----------
-        True
-            Returned if the subscription was successfully started.
-        False
-            Returned if the subscription was not successfully started.
-        """
-
-        uri = "{0}/subscriptions/start".format(
-            self.config.get_option('API_SETTINGS', 'activityApiRoot')
-        )
-        headers = {
-            'Authorization': self.token.return_authorization_string(),
-            'Content-Type': 'application/json'
-        }
-        parameters = {
-            'contentType': content_type,
-            'PublisherIdentifier': self.config.get_option(
-                'API_SETTINGS', 'tenantId')
-        }
-        body = '{}'
-        r = requests.post(uri, data=body, params=parameters, headers=headers)
-        try:
-            if r.json()['status'] != 'enabled':
-                self._log_writer(
-                    logging.error,
-                    "Subscription for {} did not enable properly. "
-                    "{}".format(content_type,
-                                json.dumps(r.json()))
-                )
-                return False
-            else:
-                return True
-        except KeyError:
-            self._log_writer(
-                logging.error,
-                "Status not available in 'start_subscription' "
-                "response: {}".format(json.dumps(r.json()))
-            )
-            return False
-
-    @validate_token
-    @validate_subscription
-    def retrieve_logs(self, content_type=None):
-        """
-        Gets the logs from O365 Management Activity API.
-
-        You can specify the content type. You can add start/end
-        times as well if using a cron job and require logs at a smaller
-        interval than the default of 24 hours. The time is acquired in
-        this order during the O365ManagementApi object creation:
-        1. CLI argument
-        2. time.log file where the last run's end time is stored
-        3. Ten minutes ago.
-
-        Microsoft has recommendations on specifying time ranges for
-        the O365 Management Activity API:
-
-        https://docs.microsoft.com/en-us/office/office-365-management
-        -api/office-365-management-activity-api-reference#list-
-        available-content
-
-            - Returns content as it became 'available' in the
-                specified range
-            - Time range is inclusive for startTime:
-                (startTime <= contentCreated)
-            - Time range is exclusive for endTime:
-                (contentCreated < endTime)
-            - Can have the following formats for times in UTC:
-                YYYY-MM-DD
-                YYYY-MM-DDTHH:MM
-                YYYY-MM-DDTHH:MM:SS
-            - Both startTime and endTime must be specified (or both
-                omitted) and they must be no more than 24 hours apart,
-                with the start time no more than 7 days in the past.
-                By default, if startTime and endTime are omitted,
-                then the content available in the last 24 hours is
-                returned.
-            - The recommendation (to avoid partials) is to NOT perform
-                a request for more than 24 hours between start and end.
-
-        Parameters
-        ----------
-        content_type: str
-            The content type to pull down from O365 Management Activity
-            API. If this parameter is 'None', then we will pull all
-            content types that are listed in the config file.
-        """
-
-        uri = "{0}/subscriptions/content".format(
-            self.config.get_option('API_SETTINGS', 'activityApiRoot'))
-        headers = {
-            'Authorization': self.token.return_authorization_string()
-        }
-        parameters = {
-            'PublisherIdentifier': self.config.get_option(
-                'API_SETTINGS', 'tenantId'),
-            'contentType': content_type,
-            'startTime': self._start_epoch_to_readable_str(
-                '%Y-%m-%dT%H:%M:%S'
-            ),
-            'endTime': self._end_epoch_to_readable_str('%Y-%m-%dT%H:%M:%S')
-        }
-        run_string = ("Begin run. Range: {} to {}".format(
-                      parameters['startTime'], parameters['endTime']))
-        self._log_writer(logging.info, run_string)
-        r = requests.get(uri, params=parameters, headers=headers)
-
-        # Log blobs are groups of events that can be pulled from the
-        # Api. Log blob 'locations' are the endpoints in which you
-        # must query to pull down those lob blobs. When you list
-        # content, you actually list the blob locations.  You must
-        # then go pull down the contents of those log blob locations
-
-        blob_locations = [blob_info for blob_info in r.json()]
-
-        for blob_content in blob_locations:
-            # TODO - need to build in retry process... ???
-            self._get_content(blob_content)
-
-            # Format each individual event to contain the metadata
-            # and then write to file.
-            for event in blob_content['contentData']:
-                try:
-                    self._add_meta_data_to_each_event(event, blob_content)
-                    self._write_event_to_file(event)
-                except Exception as e:
-                    self._log_writer(
-                        logging.exception,
-                        "Exception when writing {}"
-                        "".format(json.dumps(event))
-                    )
-
-    @staticmethod
-    def _add_meta_data_to_each_event(event, blob_content):
-        """
-        Quick function to add metadata to the event within the blob.
-
-        Parameters
-        ----------
-        event: dict
-            One of the events within the blob. Should be a dictionary.
-            This is one of the actual events we want to log.
-        blob_content: dict
-            Blob dictonary containing metadata and a list of actual
-            events.  We pull the metadata from this guy and add it
-            to each individual event.
-        """
-
-        event['contentType'] = blob_content['contentType']
-        event['contentUri'] = blob_content['contentUri']
-        event['contentId'] = blob_content['contentId']
-
-    def _write_event_to_file(self, event):
-        """
-        Writes the single event to a log file based on the content
-        type of the event.
-
-        Parameters
-        ----------
-        event: dict
-            Dictonary containing the event payload and metadata.
-            Will be written to file in JSON format.
-        """
-
-        local_log_file = os.path.join(
-            self.log_location, "{}.log".format(event['contentType']))
-        with open(local_log_file, 'a+') as write_file:
-            write_file.write("{}\n".format(json.dumps(event)))
-
-    @validate_token
-    def _get_content(self, blob_meta):
-        """
-        Pulls down the event blob at the endpoint identified in
-        blob_meta.
-
-        The payload from the response will be added as a value to
-        the 'ContentData' key in blob_meta. This is to keep the
-        meta data with the appropriate events until we add the
-        meta data to the events themselves.
-
-        Parameters
-        ----------
-        blob_meta: dict
-            Holds the endpoing and other metadata about the events
-            contained in the blob.
-        """
-
-        try:
-            uri = blob_meta['contentUri']
-            headers = {
-                'Authorization': self.token.return_authorization_string()
-            }
-            parameters = {
-                'PublisherIdentifier': self.config.get_option(
-                    'API_SETTINGS', 'tenantId')
-            }
-            r = requests.get(uri, params=parameters, headers=headers)
-            blob_meta['contentData'] = r.json()
-        except Exception as e:
-            self._log_writer(logging.exception, "{}".format(e))
-    '''
     def _get_last_log_time(self):
         """
         Pulls the last 'end-time' of this program. This is handy if the
@@ -915,7 +586,7 @@ class O365ManagementApi:
         with file_wrapper.open('w') as time_file:
             time_file.write(str(self.end_time))
 
-    def _start_str(self, window):
+    def _start_str(self, window, format_=None):
         """
         Returns readable string of current program's start_time value.
 
@@ -930,17 +601,17 @@ class O365ManagementApi:
             String format of the datetime object.
         """
         start = int(window['start'])
-        format_ = '%Y-%m-%dT%H:%M:%S'
-        return datetime.fromtimestamp(start).strftime(format_)
+        str_format_ = format_ or '%Y-%m-%dT%H:%M:%S'
+        return datetime.fromtimestamp(start).strftime(str_format_)
 
-    def _end_str(self, window):
+    def _end_str(self, window, format_=None):
         """
         Returns readable string of current program's end_time value.
         """
 
         end = int(window['end'])
-        format_ = '%Y-%m-%dT%H:%M:%S'
-        return datetime.fromtimestamp(end).strftime(format_)
+        str_format_ = format_ or '%Y-%m-%dT%H:%M:%S'
+        return datetime.fromtimestamp(end).strftime(str_format_)
 
     '''
     def _log_writer(self, log_type, message):

@@ -22,7 +22,8 @@ if __name__ == '__main__':
         begin_total = time.time()
         # Get configuration
         config_file = os.environ.get('O365_MANAGEMENT_API_CONFIG')
-        setup_logger()
+        log_level = os.environ.get('O365_LOG_LEVEL', 'INFO')
+        setup_logger(log_level=log_level)
         config_parser = ParserWrapper(config_file)
 
         # Interact with arguments
