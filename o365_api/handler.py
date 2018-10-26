@@ -1,10 +1,9 @@
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
-from datetime import datetime
 import asyncio
 import json
 import logging
 import os
-import time
 
 import adal
 import aiohttp
@@ -190,29 +189,28 @@ class O365ManagementApi:
 
     """
 
-    def __init__(self, config_parser, start_time=None,
-                 end_time=None, run_id=None):
+    def __init__(self, config_parser, start_time=None, end_time=None, run_id=None):
         """
         Initialize an instance of the class
         """
 
         self.config = config_parser
-        self.log_location = self._get_logging_setting('baseLogLocation')
-        self.debug_location = self._get_logging_setting('debugLogLocation')
-        self.time_location = self._get_logging_setting('timeKeeperLocation')
+        self.log_location = self._get_logging_setting("baseLogLocation")
+        self.debug_location = self._get_logging_setting("debugLogLocation")
+        self.time_location = self._get_logging_setting("timeKeeperLocation")
         self.authority_url = urljoin(
-            self._get_api_setting('authorityHostUrl'),
-            self._get_api_setting('tenant')
+            self._get_api_setting("authorityHostUrl"), self._get_api_setting("tenant")
         )
         self.key = self.get_private_key()
         self.content_types = self.config.get_all_option_values_in_section(
-            'ContentTypes')
-        self.pub_id = self._get_api_setting('tenantId')
-        self.root_api = self._get_api_setting('activityApiRoot')
-        self.start_time = (
-            start_time or self._get_last_log_time() or (int(time.time()) - 600)
+            "ContentTypes"
         )
-        self.end_time = end_time or int(time.time())
+        self.pub_id = self._get_api_setting("tenantId")
+        self.root_api = self._get_api_setting("activityApiRoot")
+        self.start_time = (
+            start_time or self._get_last_log_time() or self._auto_start_time()
+        )
+        self.end_time = end_time or int(datetime.now(timezone.utc).timestamp())
         # Microsoft recommends no more than 24 hrs when listing available
         # content endpoints.
         self.windows = self._split_time_into_24_hr_chunks()
@@ -224,6 +222,14 @@ class O365ManagementApi:
         self.content_locations = {}
         self.events = {}
         self.events_count = {}
+
+    def _auto_start_time(self):
+        """ Get start time from current UTC time - 600 seconds """
+
+        utc_now = datetime.now(timezone.utc)
+        delta = timedelta(seconds=600)
+        start_datetime = utc_now - delta
+        return int(start_datetime.timestamp())
 
     def _split_time_into_24_hr_chunks(self):
         """ Splits time ranges > 24 hours into 24 hour windows.
@@ -248,14 +254,14 @@ class O365ManagementApi:
         start = int(self.start_time)
         while window > 86400:
             end = start + 86400
-            list_.append({'start': start, 'end': end})
+            list_.append({"start": start, "end": end})
             start = end
             window -= 86400
-        list_.append({'start': start, 'end': int(self.end_time)})
+        list_.append({"start": start, "end": int(self.end_time)})
         window_count = str(len(list_))
         logging.info(
-            'This run will be broken up into {} sections: {}'
-            ''.format(window_count, json.dumps(list_))
+            "This run will be broken up into {} sections: {}"
+            "".format(window_count, json.dumps(list_))
         )
         return list_
 
@@ -264,14 +270,14 @@ class O365ManagementApi:
             config file.
         """
 
-        return self.config.get_option('API_SETTINGS', setting)
+        return self.config.get_option("API_SETTINGS", setting)
 
     def _get_logging_setting(self, setting):
         """ Helper function to grab options from LOGGING in the
             config file.
         """
 
-        return self.config.get_option('LOGGING', setting)
+        return self.config.get_option("LOGGING", setting)
 
     def get_token(self):
         """
@@ -299,16 +305,13 @@ class O365ManagementApi:
             O365Token object built from the context ADAL library response
         """
 
-        context = adal.AuthenticationContext(
-            self.authority_url,
-            verify_ssl=False
-        )
+        context = adal.AuthenticationContext(self.authority_url, verify_ssl=False)
 
         token = context.acquire_token_with_client_certificate(
-            self._get_api_setting('resource'),
-            self._get_api_setting('clientID'),
+            self._get_api_setting("resource"),
+            self._get_api_setting("clientID"),
             self.key,
-            self._get_api_setting('thumbprint'),
+            self._get_api_setting("thumbprint"),
         )
 
         return O365Token(token)
@@ -330,7 +333,7 @@ class O365ManagementApi:
             Returns a string representation of the private key
         """
 
-        key_file = self._get_api_setting('privateKeyFile')
+        key_file = self._get_api_setting("privateKeyFile")
         file_wrap = file_wrapper or FileWrapper(key_file)
         with file_wrap.open() as pem_file:
             private_pem = pem_file.read()
@@ -367,8 +370,7 @@ class O365ManagementApi:
     # BASE HTTP SESSION FUNCTIONS
     #################################################
 
-    async def _api_get(self, content_type='application/json',
-                       encoding=None, **kwargs):
+    async def _api_get(self, content_type="application/json", encoding=None, **kwargs):
         """ This is the base function to make an HTTP request.
 
             It's not that intelligent so you do have to pass in the
@@ -408,18 +410,17 @@ class O365ManagementApi:
 
         async with self.session.get(ssl=False, **kwargs) as r:
             if r.status != 200:
-                logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
+                logging.error("{}, {}, {}".format(r.url, r.status, r.reason))
                 raise ValueError(
-                    'API call returned status that was not 200 - Status: {},'
-                    ' Reason: {}, URL: {}, Headers: {}'
-                    ''.format(r.status, r.reason, r.url, r.headers)
+                    "API call returned status that was not 200 - Status: {},"
+                    " Reason: {}, URL: {}, Headers: {}"
+                    "".format(r.status, r.reason, r.url, r.headers)
                 )
             json_ = await r.json(content_type=content_type, encoding=encoding)
             headers_ = r.headers
             return json_, headers_
 
-    async def _api_post(self, content_type='application/json',
-                        encoding=None, **kwargs):
+    async def _api_post(self, content_type="application/json", encoding=None, **kwargs):
         """ This is the base function to make an HTTP request.
 
             It's not that intelligent so you do have to pass in the
@@ -459,11 +460,11 @@ class O365ManagementApi:
 
         async with self.session.post(ssl=False, **kwargs) as r:
             if r.status != 200:
-                logging.error('{}, {}, {}'.format(r.url, r.status, r.reason))
+                logging.error("{}, {}, {}".format(r.url, r.status, r.reason))
                 raise ValueError(
-                    'API call returned status that was not 200 - Status: {},'
-                    ' Reason: {}, URL: {}, Headers: {}'
-                    ''.format(r.status, r.reason, r.url, r.headers)
+                    "API call returned status that was not 200 - Status: {},"
+                    " Reason: {}, URL: {}, Headers: {}"
+                    "".format(r.status, r.reason, r.url, r.headers)
                 )
             json_ = await r.json(content_type=content_type, encoding=encoding)
             headers_ = r.headers
@@ -492,9 +493,9 @@ class O365ManagementApi:
         inactive_subs = self._get_inactive_subscriptions(r_json)
 
         # Activate inactive subscriptions if config file says to
-        auto_subscribe = self._get_api_setting('autoStartSubscriptions')
+        auto_subscribe = self._get_api_setting("autoStartSubscriptions")
         if not (auto_subscribe == "True"):
-            logging.info('Auto subscribe is turned off.')
+            logging.info("Auto subscribe is turned off.")
             return
 
         await self._activate_inactive_subscriptions(inactive_subs)
@@ -503,14 +504,12 @@ class O365ManagementApi:
         """ Request a list of subscriptions from the API"""
 
         http_args = {
-            'url': urljoin(self.root_api, 'subscriptions/list'),
-            'headers': {
-                'Authorization': self.token.return_authorization_string()
-            },
-            'params': {'PublisherIdentifier': self.pub_id},
+            "url": urljoin(self.root_api, "subscriptions/list"),
+            "headers": {"Authorization": self.token.return_authorization_string()},
+            "params": {"PublisherIdentifier": self.pub_id},
         }
 
-        logging.debug('Requesting the subscription list')
+        logging.debug("Requesting the subscription list")
 
         return await self._api_get(**http_args)
 
@@ -539,8 +538,7 @@ class O365ManagementApi:
         length = str(len(inactive_subs))
 
         logging.info(
-            'There are {} inactive subscriptions: {}'
-            ''.format(length, inactive_subs)
+            "There are {} inactive subscriptions: {}" "".format(length, inactive_subs)
         )
         return inactive_subs
 
@@ -575,8 +573,8 @@ class O365ManagementApi:
             return self._list_inactive_subs(r_json)
         except (TypeError, KeyError) as e:
             logging.exception(
-                'Failure while checking for inactive subscriptions. List '
-                'subscription API call response: {}'.format(r_json)
+                "Failure while checking for inactive subscriptions. List "
+                "subscription API call response: {}".format(r_json)
             )
             raise
 
@@ -586,15 +584,15 @@ class O365ManagementApi:
         """
 
         missing_subs = []
-        subscription_set = {sub['contentType'] for sub in r_json}
+        subscription_set = {sub["contentType"] for sub in r_json}
         for content_type in self.content_types:
             if content_type not in subscription_set:
                 missing_subs.append(content_type)
 
         length = str(len(missing_subs))
         logging.debug(
-            'There are {} missing content types missing from the '
-            'subscriptions list returned from the API'.format(length)
+            "There are {} missing content types missing from the "
+            "subscriptions list returned from the API".format(length)
         )
 
         return missing_subs
@@ -619,21 +617,22 @@ class O365ManagementApi:
         inactive_subs = []
         for subscription in json_:
             try:
-                if subscription['status'] != 'enabled':
-                    inactive_subs.append(subscription['contentType'])
+                if subscription["status"] != "enabled":
+                    inactive_subs.append(subscription["contentType"])
             except TypeError as t:
                 raise TypeError(
-                    'Unexpected Message when checking subscription:'
-                    ' {}'.format(t.message)
+                    "Unexpected Message when checking subscription:"
+                    " {}".format(t.message)
                 )
             except KeyError:
                 raise KeyError(
-                    'status or contentType key missing response from '
-                    'subscription list API.'
+                    "status or contentType key missing response from "
+                    "subscription list API."
                 )
         length = str(len(inactive_subs))
-        logging.debug('There are {} inactive subscriptions as stated by the'
-                      ' API'.format(length))
+        logging.debug(
+            "There are {} inactive subscriptions as stated by the" " API".format(length)
+        )
         return inactive_subs
 
     def _coroutines_for_subs(self, inactive_subs):
@@ -646,7 +645,7 @@ class O365ManagementApi:
             if content_type in inactive_subs:
                 coroutines_.append(self._start_subscription(content_type))
         return coroutines_
-    
+
     async def _start_subscription_attempt_loop(self, **kwargs):
         """ Try to start a subscription 3 times. If it is still not
             started after three attempts, then log as an error
@@ -661,43 +660,38 @@ class O365ManagementApi:
         remaining_attempts = 3
         while remaining_attempts:
             attempt_num = str(4 - remaining_attempts)
-            logging.info('Subscription start attempt {}'.format(attempt_num))
+            logging.info("Subscription start attempt {}".format(attempt_num))
 
             # Attempt to start the subscription
             json_, header_ = await self._api_post(**kwargs)
 
             if self._sub_start_successful(json_, header_):
                 logging.info(
-                    'Subscription started successfully for {0}'
-                    ''.format(kwargs['params']['contentType'])
+                    "Subscription started successfully for {0}"
+                    "".format(kwargs["params"]["contentType"])
                 )
                 break
 
             remaining_attempts -= 1
             if not remaining_attempts:
                 logging.error(
-                    'Subscription for \'{0}\' could not be started after 3 '
-                    'attempts. No logs will be gathered for this content '
-                    'type.'.format(kwargs['params']['contentType'])
+                    "Subscription for '{0}' could not be started after 3 "
+                    "attempts. No logs will be gathered for this content "
+                    "type.".format(kwargs["params"]["contentType"])
                 )
-                self.inactive_subscriptions.append(
-                    kwargs['params']['contentType']
-                )
+                self.inactive_subscriptions.append(kwargs["params"]["contentType"])
 
     def _start_subscription_args(self, content_type):
         """ Setup args for the API call to start subscriptions """
 
         http_args = {
-            'url': urljoin(self.root_api, 'subscriptions/start'),
-            'headers': {
-                'Authorization': self.token.return_authorization_string(),
-                'Content-Type': 'application/json',
+            "url": urljoin(self.root_api, "subscriptions/start"),
+            "headers": {
+                "Authorization": self.token.return_authorization_string(),
+                "Content-Type": "application/json",
             },
-            'params': {
-                'contentType': content_type,
-                'PublisherIdentifier': self.pub_id,
-            },
-            'data': '{}',
+            "params": {"contentType": content_type, "PublisherIdentifier": self.pub_id},
+            "data": "{}",
         }
         return http_args
 
@@ -707,7 +701,7 @@ class O365ManagementApi:
         """
 
         try:
-            if json_['status'] != 'enabled':
+            if json_["status"] != "enabled":
                 return False
         except KeyError:
             logging.error(
@@ -770,8 +764,7 @@ class O365ManagementApi:
         await self._get_locations(type_, win=win, endpoint=endpoint)
         location_length = str(len(self.content_locations[type_]))
         logging.info(
-            'Log type {} has total of {} locations'
-            ''.format(type_, location_length)
+            "Log type {} has total of {} locations" "".format(type_, location_length)
         )
 
         await self._get_contents(type_)
@@ -809,16 +802,16 @@ class O365ManagementApi:
 
         length = str(len(locations_list))
         logging.debug(
-            'Received {} locations on the {} iteration for type {}'
-            ''.format(length, str(cnt), type_)
+            "Received {} locations on the {} iteration for type {}"
+            "".format(length, str(cnt), type_)
         )
 
         self.content_locations[type_] += locations_list
 
         # If the API says there are more locations for this content
         # type in this time frame, go get them.. (recursive)
-        if 'NextPageUri' in r_headers:
-            next_endpoint = r_headers['NextPageUri']
+        if "NextPageUri" in r_headers:
+            next_endpoint = r_headers["NextPageUri"]
             cnt += 1
             await self._get_locations(type_, endpoint=next_endpoint, cnt=cnt)
 
@@ -830,14 +823,12 @@ class O365ManagementApi:
         locations = [loc for loc in self.content_locations[type_]]
 
         # gathering coroutines to run them concurrently.
-        coroutines = [
-            self._get_log_content(type_, location) for location in locations
-        ]
+        coroutines = [self._get_log_content(type_, location) for location in locations]
         await asyncio.gather(*coroutines, loop=self.loop)
 
         logging.info(
-            'Log type {} received {} events in total'
-            ''.format(type_, self.events_count[type_])
+            "Log type {} received {} events in total"
+            "".format(type_, self.events_count[type_])
         )
 
     def _write_events_to_file(self, type_):
@@ -853,14 +844,14 @@ class O365ManagementApi:
 
         try:
             length = str(len(self.events[type_]))
-            logging.info('Writing {} events for {}'.format(length, type_))
+            logging.info("Writing {} events for {}".format(length, type_))
             file_name = "{}.log".format(type_)
             file_path = os.path.join(self.log_location, file_name)
-            with open(file_path, 'a+') as write_file:
+            with open(file_path, "a+") as write_file:
                 for event in self.events[type_]:
                     write_file.write("{}\n".format(json.dumps(event)))
-        except KeyError as k:
-            logging.info('Type {} has no events to write.'.format(type_))
+        except KeyError:
+            logging.info("Type {} has no events to write.".format(type_))
 
     def _location_args(self, type_, window=None, endpoint=None):
         """ Helper function to set the arguments for the
@@ -870,25 +861,21 @@ class O365ManagementApi:
         # If not a pagination request, you'll need parameters
         if not endpoint:
             http_args = {
-                'url': urljoin(self.root_api, 'subscriptions/content'),
-                'headers': {
-                    'Authorization': self.token.return_authorization_string()
+                "url": urljoin(self.root_api, "subscriptions/content"),
+                "headers": {"Authorization": self.token.return_authorization_string()},
+                "params": {
+                    "PublisherIdentifier": self.pub_id,
+                    "contentType": type_,
+                    "startTime": self._start_str(window),
+                    "endTime": self._end_str(window),
                 },
-                'params': {
-                    'PublisherIdentifier': self.pub_id,
-                    'contentType': type_,
-                    'startTime': self._start_str(window),
-                    'endTime': self._end_str(window)
-                }
             }
         # If a pagination request, parameters are already included
         # in the URL.
         else:
             http_args = {
-                'url': endpoint,
-                'headers': {
-                    'Authorization': self.token.return_authorization_string()
-                },
+                "url": endpoint,
+                "headers": {"Authorization": self.token.return_authorization_string()},
             }
         return http_args
 
@@ -896,13 +883,9 @@ class O365ManagementApi:
         """ Get the events from a log location and store them """
 
         http_args = {
-            'url': location['contentUri'],
-            'headers': {
-                'Authorization': self.token.return_authorization_string(),
-            },
-            'params': {
-                'PublisherIdentifier': self.pub_id,
-            },
+            "url": location["contentUri"],
+            "headers": {"Authorization": self.token.return_authorization_string()},
+            "params": {"PublisherIdentifier": self.pub_id},
         }
 
         json_, _ = await self._api_get(content_type=None, **http_args)
@@ -911,8 +894,8 @@ class O365ManagementApi:
         self.events_count[type_] += events_length
 
         logging.debug(
-            'There were {} events in a location for {}'
-            ''.format(str(events_length), type_)
+            "There were {} events in a location for {}"
+            "".format(str(events_length), type_)
         )
 
         # Join the metadata (from log location) to each event and then
@@ -939,8 +922,7 @@ class O365ManagementApi:
         """
 
         try:
-            file_wrapper = FileWrapper(
-                os.path.join(self.time_location, 'time.log'))
+            file_wrapper = FileWrapper(os.path.join(self.time_location, "time.log"))
             with file_wrapper.open() as time_file:
                 epoch_time = time_file.readline()
                 return int(epoch_time)
@@ -962,10 +944,8 @@ class O365ManagementApi:
             String format of the datetime object.
         """
 
-        file_wrapper = FileWrapper(
-            os.path.join(self.time_location, 'time.log')
-        )
-        with file_wrapper.open('w') as time_file:
+        file_wrapper = FileWrapper(os.path.join(self.time_location, "time.log"))
+        with file_wrapper.open("w") as time_file:
             time_file.write(str(self.end_time))
 
     def _start_str(self, window, format_=None):
@@ -985,9 +965,9 @@ class O365ManagementApi:
             String format of the datetime object.
         """
 
-        start = int(window['start'])
-        str_format_ = format_ or '%Y-%m-%dT%H:%M:%S'
-        return datetime.fromtimestamp(start).strftime(str_format_)
+        start = int(window["start"])
+        str_format_ = format_ or "%Y-%m-%dT%H:%M:%S"
+        return datetime.fromtimestamp(start, tz=timezone.utc).strftime(str_format_)
 
     def _end_str(self, window, format_=None):
         """ Returns readable string of the current windows 'end'
@@ -1006,6 +986,6 @@ class O365ManagementApi:
             String format of the datetime object.
         """
 
-        end = int(window['end'])
-        str_format_ = format_ or '%Y-%m-%dT%H:%M:%S'
-        return datetime.fromtimestamp(end).strftime(str_format_)
+        end = int(window["end"])
+        str_format_ = format_ or "%Y-%m-%dT%H:%M:%S"
+        return datetime.fromtimestamp(end, tz=timezone.utc).strftime(str_format_)

@@ -15,12 +15,11 @@ class O365Token:
         "expiresIn": 3599
     }
     """
+
     def __init__(self, token_info):
         for key, value in token_info.items():
             setattr(self, key, value)
-        self.expiresOn = datetime.strptime(
-            self.expiresOn, '%Y-%m-%d %H:%M:%S.%f'
-        )
+        self.expiresOn = datetime.strptime(self.expiresOn, "%Y-%m-%d %H:%M:%S.%f")
 
     def return_authorization_string(self):
         """
@@ -52,7 +51,6 @@ def validate_token(func):
             do_func = func(*args, **kwargs)
             return do_func
         except AttributeError as a:
-            raise AttributeError(
-                '{0}: Existing token not valid or empty'.format(a)
-            )
+            raise AttributeError("{0}: Existing token not valid or empty".format(a))
+
     return wrapper

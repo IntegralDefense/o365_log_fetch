@@ -1,4 +1,4 @@
-from configparser import (ConfigParser, Error as ConfigError)
+from configparser import ConfigParser, Error as ConfigError
 from io import StringIO
 
 
@@ -24,7 +24,7 @@ class FileWrapper:
 
         self.file_name = file_
 
-    def open(self, switch='r'):
+    def open(self, switch="r"):
         """
         Return a file handler.
 
@@ -148,8 +148,7 @@ class ParserWrapper:
         """
 
         if test:
-            self.config_parser.read_string(
-                self.config_info, source="Unit_Test_String")
+            self.config_parser.read_string(self.config_info, source="Unit_Test_String")
         else:
             self.config_parser.read(self.config_info)
 
@@ -178,8 +177,9 @@ class ParserWrapper:
             return self.config_parser.get(section, option)
 
         except (ConfigError, KeyError) as e:
-            raise ConfigError("Error while getting option from config file: {}."
-                              "".format(e))
+            raise ConfigError(
+                "Error while getting option from config file: {}." "".format(e)
+            )
 
     def get_all_option_values_in_section(self, section):
         """
@@ -204,6 +204,9 @@ class ParserWrapper:
             return [values for values in self.config_parser[section].values()]
 
         except (ConfigError, KeyError) as e:
-            raise ConfigError("Error while getting all option values from "
-                              "config file: {}"
-                              "".format(e))
+            raise ConfigError(
+                "Error while getting all option values from "
+                "config file: {}"
+                "".format(e)
+            )
+

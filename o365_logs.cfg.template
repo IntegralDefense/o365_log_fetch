@@ -4,8 +4,10 @@ tenantId = <UUID-OF-Tenant>
 clientId = <UUID-OF-APPID>
 authorityHostUrl = https://login.microsoftonline.com
 resource = https://manage.office.com
+# You can pull the thumbprint from the Azure portal after uploading the cert
 thumbprint = <Thumprint from Public Key associated with app in Azure AD>
 privateKeyFile = <Location of private key used to sign JWT assertions and acquire Access Tokens>
+# Interpolation for activityApiRoot
 activityApiRoot = %(resource)s/api/v1.0/%(tenantId)s/activity/feed
 autoStartSubscriptions = True/False
 
@@ -14,9 +16,13 @@ autoStartSubscriptions = True/False
 type1 = Audit.Exchange
 type2 = Audit.AzureActiveDirectory
 type3 = Audit.Sharepoint
+#type4 = whatever
 
 # Logging locations
 [LOGGING]
+# Where the events from the API will be stored
 baseLogLocation = /opt/microsoft_cloud/log
+# Where the system logs will be kept. Will be replaced with env variable at some point
 debugLogLocation = /opt/microsoft_cloud/debug
+# Where the "last run's ending epoch" will be stored and read from
 timeKeeperLocation = /opt/microsoft_cloud
