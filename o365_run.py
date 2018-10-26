@@ -13,7 +13,7 @@ from o365_api.logger import setup_logger
 from o365_api.wrappers import ParserWrapper
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     load_dotenv(override=True)
 
@@ -21,8 +21,8 @@ if __name__ == '__main__':
     try:
         begin_total = time.time()
         # Get configuration
-        config_file = os.environ.get('O365_MANAGEMENT_API_CONFIG')
-        log_level = os.environ.get('O365_LOG_LEVEL', 'INFO')
+        config_file = os.environ.get("O365_MANAGEMENT_API_CONFIG")
+        log_level = os.environ.get("O365_LOG_LEVEL", "INFO")
         setup_logger(log_level=log_level)
         config_parser = ParserWrapper(config_file)
 
@@ -43,10 +43,7 @@ if __name__ == '__main__':
         loop = asyncio.get_event_loop()
         loop.run_until_complete(api.run(loop))
         loop.close()
-        '''
-        for content_type in api.content_types:
-            api.retrieve_logs(content_type=content_type)
-        '''
+
         api.save_last_log_time()
         end_total = time.time()
     except Exception as e:
@@ -56,6 +53,6 @@ if __name__ == '__main__':
         raise
     else:
         runtime = str(int(end_total - begin_total))
-        logging.info('Total runtime: {} seconds.'.format(runtime))
+        logging.info("Total runtime: {} seconds.".format(runtime))
 
     exit()
