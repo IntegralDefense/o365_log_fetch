@@ -63,10 +63,10 @@ The locations you wish log to.
 You may use the included template to fill out the following:
 
 Where your config file is...
-O365_MANAGEMENT_API_CONFIG=C:\Users\a421178\repos\o365_log_fetch\o365_logs.cfg
+O365_MANAGEMENT_API_CONFIG=C:\Users\billy\repos\o365_log_fetch\o365_logs.cfg
 
 Where you want to store system/runtime logs (all program logs will be written to a single log file. This is NOT the file in which the O365 events will be writtern):
-O365_DEBUG_LOG_LOCATION=C:\Users\a421178\repos\o365_log_fetch\debug
+O365_DEBUG_LOG_LOCATION=C:\Users\billy\repos\o365_log_fetch\debug
 
 Log level. If not defined, the default will be INFO
 O365_LOG_LEVEL=INFO
