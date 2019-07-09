@@ -504,7 +504,7 @@ class O365ManagementApi:
         """ Request a list of subscriptions from the API"""
 
         http_args = {
-            "url": urljoin(self.root_api, "subscriptions/list"),
+            "url": urljoin(self.root_api, "feed/subscriptions/list"),
             "headers": {"Authorization": self.token.return_authorization_string()},
             "params": {"PublisherIdentifier": self.pub_id},
         }
@@ -685,7 +685,7 @@ class O365ManagementApi:
         """ Setup args for the API call to start subscriptions """
 
         http_args = {
-            "url": urljoin(self.root_api, "subscriptions/start"),
+            "url": urljoin(self.root_api, "feed/subscriptions/start"),
             "headers": {
                 "Authorization": self.token.return_authorization_string(),
                 "Content-Type": "application/json",
@@ -861,7 +861,7 @@ class O365ManagementApi:
         # If not a pagination request, you'll need parameters
         if not endpoint:
             http_args = {
-                "url": urljoin(self.root_api, "subscriptions/content"),
+                "url": urljoin(self.root_api, "feed/subscriptions/content"),
                 "headers": {"Authorization": self.token.return_authorization_string()},
                 "params": {
                     "PublisherIdentifier": self.pub_id,
