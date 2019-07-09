@@ -353,7 +353,7 @@ class O365ManagementApi:
         """
 
         self.loop = loop
-        async with aiohttp.ClientSession(loop=loop) as session:
+        async with aiohttp.ClientSession(loop=loop, trust_env=True) as session:
             self.session = session
             coroutine_ = self.o365_log_foreman()
             await asyncio.gather(coroutine_, loop=self.loop)
