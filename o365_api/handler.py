@@ -408,7 +408,7 @@ class O365ManagementApi:
 
         """
 
-        async with self.session.get(ssl=False, **kwargs) as r:
+        async with self.session.get(ssl=True, timeout=600, **kwargs) as r:
             if r.status != 200:
                 logging.error("{}, {}, {}".format(r.url, r.status, r.reason))
                 raise ValueError(
